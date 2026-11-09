@@ -1,6 +1,6 @@
 {
   "name": "solidworks-codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Create and inspect SolidWorks models through visible, stepwise local CAD automation.",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

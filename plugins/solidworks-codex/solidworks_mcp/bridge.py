@@ -67,6 +67,8 @@ class StaExecutor:
 
 
 class SolidWorksBridge:
+    _TYPELIB_ID = "{83A33D31-27C5-11CE-BFD4-00400513BB57}"
+
     def __init__(self) -> None:
         if os.name != "nt":
             raise RuntimeError("SolidWorks automation is available only on Windows.")
@@ -74,6 +76,7 @@ class SolidWorksBridge:
         self._app: Any = None
         self._app_pid: int | None = None
         self._selected_pid: int | None = None
+        self._sw_module: Any = None
         self._sketch_names_before: set[str] | None = None
 
     def close(self) -> None:
@@ -208,6 +211,7 @@ class SolidWorksBridge:
                 self._app = None
                 raise RuntimeError("SolidWorks did not become responsive within 90 seconds.")
 
+        app = self._typed_application(app)
         self._app = app
         self._app_pid = target_pid or self._app_pid
         try:
@@ -217,12 +221,42 @@ class SolidWorksBridge:
             raise RuntimeError(f"Could not make the selected SolidWorks instance visible: {exc}") from exc
         return self._app
 
+    def _typed_application(self, app: Any) -> Any:
+        import win32com.client.gencache
+
+        revision = str(self._value(app, "RevisionNumber"))
+        try:
+            major = int(revision.split(".", 1)[0])
+            self._sw_module = win32com.client.gencache.EnsureModule(
+                self._TYPELIB_ID, 0, major, 0
+            )
+            dispatch = getattr(app, "_oleobj_", app)
+            return self._sw_module.ISldWorks(dispatch)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load the SOLIDWORKS {revision} API type library."
+            ) from exc
+
+    def _typed_document(self, doc: Any) -> Any:
+        if self._sw_module is None:
+            raise RuntimeError("SOLIDWORKS API bindings are not initialized.")
+        dispatch = getattr(doc, "_oleobj_", doc)
+        return self._sw_module.IModelDoc2(dispatch)
+
+    def _typed_feature(self, feature: Any) -> Any:
+        if feature is None:
+            return None
+        if self._sw_module is None:
+            raise RuntimeError("SOLIDWORKS API bindings are not initialized.")
+        dispatch = getattr(feature, "_oleobj_", feature)
+        return self._sw_module.IFeature(dispatch)
+
     def _document(self, launch: bool = False) -> Any:
         app = self._connect(launch)
         doc = app.ActiveDoc
         if doc is None:
             raise RuntimeError("No active SolidWorks document. Create or open a part first.")
-        return doc
+        return self._typed_document(doc)
 
     def _part_document(self) -> Any:
         doc = self._document()
@@ -236,10 +270,9 @@ class SolidWorksBridge:
         value = getattr(obj, member)
         return value() if callable(value) else value
 
-    @staticmethod
-    def _features(doc: Any) -> list[dict[str, str]]:
+    def _features(self, doc: Any) -> list[dict[str, str]]:
         items: list[dict[str, str]] = []
-        feature = SolidWorksBridge._value(doc, "FirstFeature")
+        feature = self._typed_feature(self._value(doc, "FirstFeature"))
         visited: set[str] = set()
         while feature is not None:
             name = str(feature.Name)
@@ -247,18 +280,17 @@ class SolidWorksBridge:
                 break
             visited.add(name)
             try:
-                type_name = str(SolidWorksBridge._value(feature, "GetTypeName2"))
+                type_name = str(self._value(feature, "GetTypeName2"))
             except Exception:
                 type_name = "Unknown"
             items.append({"name": name, "type": type_name})
-            feature = SolidWorksBridge._value(feature, "GetNextFeature")
+            feature = self._typed_feature(self._value(feature, "GetNextFeature"))
         return items
 
-    @staticmethod
-    def _sketch_features(doc: Any) -> list[str]:
+    def _sketch_features(self, doc: Any) -> list[str]:
         return [
             item["name"]
-            for item in SolidWorksBridge._features(doc)
+            for item in self._features(doc)
             if item["type"].lower() in {"profilefeature", "3dprofilefeature", "sketch"}
         ]
 
@@ -349,14 +381,10 @@ class SolidWorksBridge:
 
     def new_document(self, document_type: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            import win32com.client
+            from win32com.client import constants
 
             app = self._connect(True)
             try:
-                app = win32com.client.gencache.EnsureDispatch(app)
-                self._app = app
-                from win32com.client import constants
-
                 setting = {
                     "part": constants.swDefaultTemplatePart,
                     "assembly": constants.swDefaultTemplateAssembly,
@@ -376,6 +404,7 @@ class SolidWorksBridge:
             doc = app.ActiveDoc
             if doc is None or self._doc_type(doc) != document_type:
                 raise RuntimeError(f"SolidWorks did not create a {document_type} document.")
+            doc = self._typed_document(doc)
             doc.GraphicsRedraw2()
             return {
                 "created": document_type,
