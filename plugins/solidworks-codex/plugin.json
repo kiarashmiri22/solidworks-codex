@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "solidworks-codex",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "description": "Create and inspect SolidWorks models through visible, stepwise local CAD automation.",
   "license": "MIT",
   "keywords": ["solidworks", "cad", "mcp", "codex", "mechanical-design"],

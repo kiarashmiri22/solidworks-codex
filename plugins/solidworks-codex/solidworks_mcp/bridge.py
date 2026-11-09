@@ -68,6 +68,7 @@ class StaExecutor:
 
 class SolidWorksBridge:
     _TYPELIB_ID = "{83A33D31-27C5-11CE-BFD4-00400513BB57}"
+    _CONSTANTS_TYPELIB_ID = "{4687F359-55D0-4CD3-B6CF-2EB42C11F989}"
 
     def __init__(self) -> None:
         if os.name != "nt":
@@ -77,6 +78,7 @@ class SolidWorksBridge:
         self._app_pid: int | None = None
         self._selected_pid: int | None = None
         self._sw_module: Any = None
+        self._sw_constants: Any = None
         self._sketch_names_before: set[str] | None = None
 
     def close(self) -> None:
@@ -230,6 +232,9 @@ class SolidWorksBridge:
             self._sw_module = win32com.client.gencache.EnsureModule(
                 self._TYPELIB_ID, 0, major, 0
             )
+            self._sw_constants = win32com.client.gencache.EnsureModule(
+                self._CONSTANTS_TYPELIB_ID, 0, major, 0
+            ).constants
             dispatch = getattr(app, "_oleobj_", app)
             return self._sw_module.ISldWorks(dispatch)
         except Exception as exc:
@@ -381,13 +386,11 @@ class SolidWorksBridge:
 
     def new_document(self, document_type: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            from win32com.client import constants
-
             app = self._connect(True)
             try:
                 setting = {
-                    "part": constants.swDefaultTemplatePart,
-                    "assembly": constants.swDefaultTemplateAssembly,
+                    "part": self._sw_constants.swDefaultTemplatePart,
+                    "assembly": self._sw_constants.swDefaultTemplateAssembly,
                 }[document_type]
                 template = str(app.GetUserPreferenceStringValue(setting) or "")
             except Exception as exc:
@@ -395,12 +398,25 @@ class SolidWorksBridge:
                     "Could not read SolidWorks' configured default template. Set the Part/Assembly "
                     "default template in SolidWorks Options, then retry."
                 ) from exc
-            if not template or not Path(template).is_file():
-                raise RuntimeError(
-                    f"SolidWorks has no usable default {document_type} template configured. "
-                    "Set it in Tools > Options > Default Templates and retry."
+            template_path = Path(template) if template else None
+            if template_path is None or not template_path.is_file():
+                major = int(str(self._value(app, "RevisionNumber")).split(".", 1)[0])
+                year = 1992 + major
+                filename = {"part": "Part.PRTDOT", "assembly": "Assembly.ASMDOT"}[document_type]
+                template_path = (
+                    Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+                    / "SOLIDWORKS"
+                    / f"SOLIDWORKS {year}"
+                    / "templates"
+                    / filename
                 )
-            app.NewDocument(template, 0, 0, 0)
+            if not template_path.is_file():
+                raise RuntimeError(
+                    f"SolidWorks has no usable default {document_type} template, and the installed "
+                    f"fallback was not found at {template_path}. Set it in Tools > Options > "
+                    "Default Templates and retry."
+                )
+            app.NewDocument(str(template_path), 0, 0, 0)
             doc = app.ActiveDoc
             if doc is None or self._doc_type(doc) != document_type:
                 raise RuntimeError(f"SolidWorks did not create a {document_type} document.")
@@ -410,6 +426,7 @@ class SolidWorksBridge:
                 "created": document_type,
                 "title": str(self._value(doc, "GetTitle")),
                 "path": str(self._value(doc, "GetPathName")),
+                "template": str(template_path),
             }
 
         return self._sta.call(run)
@@ -531,7 +548,9 @@ class SolidWorksBridge:
             doc = self._part_document()
             if not self._active_sketch(doc):
                 raise RuntimeError("No sketch is being edited.")
-            before = self._sketch_names_before or set(self._sketch_features(doc))
+            before = self._sketch_names_before
+            if before is None:
+                before = set(self._sketch_features(doc))
             doc.SketchManager.InsertSketch(True)
             if self._active_sketch(doc):
                 raise RuntimeError("SolidWorks did not exit sketch mode.")
