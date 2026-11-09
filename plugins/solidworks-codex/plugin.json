@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "solidworks-codex",
+  "version": "0.1.0",
+  "description": "Create and inspect SolidWorks models through visible, stepwise local CAD automation.",
+  "license": "MIT",
+  "keywords": ["solidworks", "cad", "mcp", "codex", "mechanical-design"],
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/solidworks-design/SKILL.md",
+      "interface": {
+        "displayName": "SolidWorks for Codex",
+        "shortDescription": "Model and inspect parts in SolidWorks",
+        "longDescription": "Plan and build SolidWorks part models in visible, verified steps through the local Model Context Protocol server.",
+        "developerName": "Local project",
+        "category": "Developer Tools",
+        "capabilities": ["Interactive", "Write"],
+        "brandColor": "#D71920",
+        "defaultPrompt": [
+          "Build this part in SolidWorks one visible step at a time.",
+          "Inspect the active SolidWorks model and report its feature tree and mass properties."
+        ]
+      }
+    }
+  }
+}
