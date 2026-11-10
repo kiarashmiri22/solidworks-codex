@@ -13,8 +13,10 @@
 
 برای هم‌خوانی با API فعلی SolidWorks، ساخت برآمدگی از `IFeatureManager::FeatureExtrusion3` و برش از `IFeatureManager::FeatureCut4` استفاده می‌کند. اتصال از ROT دیر‌پیوند است؛ برای پیمایش قابل‌اعتماد درخت ویژگی، wrapperهای `ISldWorks`، `IModelDoc2` و `IFeature` از type library همان نسخه بارگذاری می‌شوند. مسیر کاری MCP نسبت به ریشه‌ی افزونه تعریف شده است؛ بنابراین آرگومان‌ها به متغیر محیطی توسعه‌ایِ `${PLUGIN_ROOT}` وابسته نیستند.
 
-## مرز نسخه‌ی فعلی
+## مرز نسخه‌ی 0.2.0
 
-هدف این نسخه‌ی قابل نصب، ساخت و بررسی زنده‌ی **قطعات Part** است. کل سطح API سالیدورکس پوشش داده نمی‌شود و برای اسمبلی‌های mateدار، Drawing، Sheet Metal، Pattern، Dimension و Export باید مرحله‌ی دوم با تست واقعی در همان نسخه‌ی SolidWorks انجام شود. هیچ تست CAD روی اسمبلی باز و ذخیره‌نشده‌ی کاربر اجرا نشد.
+این نسخه ساخت و بررسی زنده‌ی Part را با ابزارهای پایه‌ی Assembly، ساخت سند Drawing، درج قطعه‌ی ذخیره‌شده در اسمبلی، اسکچ روی Face انتخاب‌شده، چندضلعی منظم و خروجی STEP/IGES/STL گسترش می‌دهد. درج قطعه به‌تنهایی Mate نمی‌سازد؛ View/Dimension در Drawing، Sheet Metal، Pattern و Hole Wizard هم در این نسخه پوشش داده نمی‌شوند. خروجی خنثی و APIهای تازه افزوده‌شده در این تغییر روی سند واقعی SolidWorks هنوز به‌طور جداگانه تأیید نشده‌اند؛ نصب/doctor به‌تنهایی آزمون هندسی محسوب نمی‌شود.
 
-در آزمون زنده‌ی 2026-11-09 روی SOLIDWORKS 2026، افزونه ابتدا قالب پیش‌فرض Part را در تنظیمات پیدا نکرد؛ نسخه‌ی 0.1.3 به قالب استاندارد نصب‌شده به‌عنوان fallback مجهز شد. سپس در نسخه‌ی 0.1.4 یک Part آزمایشی ذخیره‌نشده با مستطیل 20×20 میلی‌متر و برآمدگی 10 میلی‌متر ساخته شد؛ rebuild موفق بود، بدنه‌ی جامد وجود داشت و حجم اندازه‌گیری‌شده 4×10⁻⁶ مترمکعب بود. سند قبلی Part1 تغییر نکرد.
+برای هم‌خوانی API و رفتار COM با مستندات رسمی، مسیر ذخیره‌ی سند فعلی اکنون از `Save3` با `None` برای پارامترهای out، و Save As/خروجی از `IModelDocExtension::SaveAs3` استفاده می‌کند ([Save3](https://help.solidworks.com/2022/English/api/sldworksapi/solidworks.interop.sldworks~solidworks.interop.sldworks.imodeldoc2~save3.html), [SaveAs3](https://help.solidworks.com/2026/english/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IModelDocExtension~SaveAs3.html)). افزودن چند مؤلفه به اسمبلی با API `AddComponents3` و ماتریس تبدیل صریح انجام می‌شود ([AddComponents3](https://help.solidworks.com/2017/english/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IAssemblyDoc~AddComponents3.html)). این به‌روزرسانی ادعای پوشش کامل سطح API سالیدورکس را ندارد.
+
+در آزمون زنده‌ی 2026-11-09 روی SOLIDWORKS 2026، نسخه‌ی 0.1.4 یک Part آزمایشی ذخیره‌نشده با مستطیل 20×20 میلی‌متر و برآمدگی 10 میلی‌متر ساخت؛ rebuild موفق بود و حجم اندازه‌گیری‌شده 4×10⁻⁶ مترمکعب بود. این آزمون فقط همان گردش‌کار Part را پوشش می‌دهد و نتیجه‌ی آزمون اجزای جدید نسخه‌ی 0.2.0 نیست. سند قبلی Part1 تغییر نکرد.

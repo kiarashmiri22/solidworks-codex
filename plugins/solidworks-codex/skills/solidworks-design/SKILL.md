@@ -1,6 +1,6 @@
 ---
 name: solidworks-design
-description: Plan, build, and inspect a SolidWorks part through the local SolidWorks MCP tools. Use when a user asks Codex to create or change CAD geometry in SolidWorks.
+description: Plan, build, assemble, and inspect SolidWorks CAD through the local SolidWorks MCP tools. Use when a user asks Codex to create or change a SolidWorks model.
 ---
 
 # SolidWorks design workflow
@@ -16,12 +16,13 @@ Use the local `solidworks` MCP server to make actual changes in the visible Soli
 
 ## Build a part
 
-1. If the user requested a new part, call `sw_new_part`; otherwise keep working in the active part.
-2. Call `sw_start_sketch` with a plane name. For a localized or custom plane, call `sw_list_features` and use its exact reference-plane name.
-3. Draw with `sw_sketch_line`, `sw_sketch_rectangle`, `sw_sketch_circle`, or `sw_sketch_arc`. Each call updates the SolidWorks view.
+1. If the user requested a new part, call `sw_new_part`; otherwise keep working in the active part. For a drawing or assembly, use `sw_new_drawing` or `sw_new_assembly`.
+2. Call `sw_start_sketch` with a plane name. For a localized or custom plane, call `sw_list_features` and use its exact reference-plane name. To sketch on a selected face, the user must select exactly one face in SolidWorks before calling `sw_start_sketch_on_selected_face`.
+3. Draw with `sw_sketch_line`, `sw_sketch_rectangle`, `sw_sketch_circle`, `sw_sketch_arc`, or `sw_sketch_polygon`. Each call updates the SolidWorks view.
 4. Call `sw_finish_sketch` and use the returned exact sketch name in the next feature call.
-5. Create solids with `sw_extrude` or `sw_cut_extrude`. Do not rely on “latest sketch” guesses.
+5. Create solids with `sw_extrude` or `sw_cut_extrude`. For cuts from a reference plane, use `reverse_direction=true` when the body lies opposite the default cut direction. Do not rely on “latest sketch” guesses.
 6. Call `sw_validate_model` after the feature. Report rebuild status, feature-tree evidence, and measured mass properties when available. A screenshot or plausible shape does not establish dimensional correctness.
-7. Save only to a path the user specified or accepted. Never overwrite an existing file unless the user explicitly requested replacement; pass `overwrite=true` only then.
+7. For assemblies, use `sw_list_components` to inspect the active document and `sw_insert_component` to place an existing native part/subassembly at explicit coordinates. This only inserts components; it does not create mates or validate fit.
+8. Save only to a path the user specified or accepted. Never overwrite an existing file unless the user explicitly requested replacement; pass `overwrite=true` only then. Export Part/Assembly models with `sw_export_neutral` to STEP, IGES, or STL when requested.
 
 If a SolidWorks operation fails, stop and report the exact error and current model state before trying a different API sequence. Do not claim the part is complete until the rebuild succeeds and the feature tree matches the plan.

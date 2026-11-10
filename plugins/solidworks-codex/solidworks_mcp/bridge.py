@@ -248,6 +248,12 @@ class SolidWorksBridge:
         dispatch = getattr(doc, "_oleobj_", doc)
         return self._sw_module.IModelDoc2(dispatch)
 
+    def _typed_assembly(self, doc: Any) -> Any:
+        if self._sw_module is None:
+            raise RuntimeError("SOLIDWORKS API bindings are not initialized.")
+        dispatch = getattr(doc, "_oleobj_", doc)
+        return self._sw_module.IAssemblyDoc(dispatch)
+
     def _typed_feature(self, feature: Any) -> Any:
         if feature is None:
             return None
@@ -384,6 +390,36 @@ class SolidWorksBridge:
 
         return self._sta.call(run)
 
+    def list_open_documents(self) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            app = self._connect(False)
+            active = app.ActiveDoc
+            active_title = str(self._value(active, "GetTitle")) if active is not None else None
+            count = int(self._value(app, "GetDocumentCount"))
+            raw = self._value(app, "GetFirstDocument")
+            documents: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for _ in range(count):
+                if raw is None:
+                    break
+                doc = self._typed_document(raw)
+                title = str(self._value(doc, "GetTitle"))
+                path = str(self._value(doc, "GetPathName"))
+                key = (path or title).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    documents.append({
+                        "title": title,
+                        "path": path,
+                        "type": self._doc_type(doc),
+                        "active": title == active_title,
+                        "saved": bool(path),
+                    })
+                raw = self._value(doc, "GetNext")
+            return {"count": len(documents), "documents": documents}
+
+        return self._sta.call(run)
+
     def new_document(self, document_type: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             app = self._connect(True)
@@ -391,18 +427,23 @@ class SolidWorksBridge:
                 setting = {
                     "part": self._sw_constants.swDefaultTemplatePart,
                     "assembly": self._sw_constants.swDefaultTemplateAssembly,
+                    "drawing": self._sw_constants.swDefaultTemplateDrawing,
                 }[document_type]
                 template = str(app.GetUserPreferenceStringValue(setting) or "")
             except Exception as exc:
                 raise RuntimeError(
-                    "Could not read SolidWorks' configured default template. Set the Part/Assembly "
-                    "default template in SolidWorks Options, then retry."
+                    "Could not read SolidWorks' configured default template. Set the matching "
+                    "document template in SolidWorks Options, then retry."
                 ) from exc
             template_path = Path(template) if template else None
             if template_path is None or not template_path.is_file():
                 major = int(str(self._value(app, "RevisionNumber")).split(".", 1)[0])
                 year = 1992 + major
-                filename = {"part": "Part.PRTDOT", "assembly": "Assembly.ASMDOT"}[document_type]
+                filename = {
+                    "part": "Part.PRTDOT",
+                    "assembly": "Assembly.ASMDOT",
+                    "drawing": "Drawing.drwdot",
+                }[document_type]
                 template_path = (
                     Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
                     / "SOLIDWORKS"
@@ -456,6 +497,103 @@ class SolidWorksBridge:
 
         return self._sta.call(run)
 
+    def list_components(self, include_nested: bool) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            doc = self._document()
+            if self._doc_type(doc) != "assembly":
+                raise RuntimeError("Component listing requires an active assembly document.")
+            assembly = self._typed_assembly(doc)
+            raw_components = assembly.GetComponents(bool(include_nested))
+            if raw_components is None:
+                components = []
+            elif isinstance(raw_components, (tuple, list)):
+                components = list(raw_components)
+            else:
+                components = [raw_components]
+            rows = []
+            for component in components:
+                try:
+                    suppressed = bool(self._value(component, "IsSuppressed"))
+                except Exception:
+                    suppressed = None
+                try:
+                    visible = self._value(component, "Visible")
+                except Exception:
+                    visible = None
+                rows.append({
+                    "name": str(self._value(component, "Name2")),
+                    "path": str(self._value(component, "GetPathName")),
+                    "suppressed": suppressed,
+                    "visible": visible,
+                })
+            return {
+                "assembly": str(self._value(doc, "GetTitle")),
+                "include_nested": bool(include_nested),
+                "count": len(rows),
+                "components": rows,
+            }
+
+        return self._sta.call(run)
+
+    def insert_component(
+        self, path: str, x: float, y: float, z: float, unit: str
+    ) -> dict[str, Any]:
+        position = [to_meters(value, unit) for value in (x, y, z)]
+
+        def run() -> dict[str, Any]:
+            import pythoncom
+            import win32com.client
+
+            app = self._connect(True)
+            assembly_doc = self._document()
+            if self._doc_type(assembly_doc) != "assembly":
+                raise RuntimeError("Component insertion requires an active assembly document.")
+            target = Path(path).expanduser()
+            component_type = {".sldprt": 1, ".sldasm": 2}.get(target.suffix.lower())
+            if not target.is_absolute() or component_type is None or not target.is_file():
+                raise ValueError("path must be an absolute path to an existing .SLDPRT or .SLDASM file.")
+            assembly_title = str(self._value(assembly_doc, "GetTitle"))
+            component_doc = app.GetOpenDocumentByName(str(target))
+            if component_doc is None:
+                errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+                warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+                component_doc = app.OpenDoc6(str(target), component_type, 1, "", errors, warnings)
+                if component_doc is None:
+                    raise RuntimeError(
+                        f"SolidWorks could not load component {target} (error code {errors.value})."
+                    )
+            activation_errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            active_assembly = app.ActivateDoc3(assembly_title, False, 0, activation_errors)
+            if active_assembly is None:
+                raise RuntimeError(
+                    f"Could not reactivate assembly {assembly_title!r} "
+                    f"(error code {activation_errors.value})."
+                )
+            assembly = self._typed_assembly(active_assembly)
+            matrix = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                      position[0], position[1], position[2], 1.0, 0.0, 0.0, 0.0)
+            names = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_BSTR, (str(target),))
+            transforms = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, matrix)
+            coordinate_systems = win32com.client.VARIANT(
+                pythoncom.VT_ARRAY | pythoncom.VT_BSTR, ("",)
+            )
+            added = assembly.AddComponents3(names, transforms, coordinate_systems)
+            if added is None:
+                raise RuntimeError("SolidWorks did not add the component to the assembly.")
+            component = added[0] if isinstance(added, (tuple, list)) else added
+            if not self._rebuild(active_assembly):
+                raise RuntimeError("The component was inserted, but the assembly rebuild failed.")
+            active_assembly.GraphicsRedraw2()
+            active_assembly.ViewZoomtofit()
+            return {
+                "assembly": assembly_title,
+                "inserted": str(self._value(component, "Name2")),
+                "path": str(target),
+                "position": {"x": x, "y": y, "z": z, "unit": unit},
+            }
+
+        return self._sta.call(run)
+
     def start_sketch(self, plane: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             doc = self._part_document()
@@ -497,13 +635,33 @@ class SolidWorksBridge:
 
         return self._sta.call(run)
 
+    def start_sketch_on_selected_face(self) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            doc = self._part_document()
+            if self._active_sketch(doc):
+                raise RuntimeError("A sketch is already being edited. Finish it before starting another.")
+            selection = doc.SelectionManager
+            count = int(selection.GetSelectedObjectCount2(-1))
+            face_type = getattr(self._sw_constants, "swSelFACES", 2)
+            if count != 1 or int(selection.GetSelectedObjectType3(1, -1)) != int(face_type):
+                raise ValueError("Select exactly one model face in SolidWorks before starting this sketch.")
+            self._sketch_names_before = set(self._sketch_features(doc))
+            doc.SketchManager.InsertSketch(True)
+            if not self._active_sketch(doc):
+                raise RuntimeError("SolidWorks did not start a sketch on the selected face.")
+            doc.ClearSelection2(True)
+            doc.GraphicsRedraw2()
+            return {"sketch_active": True, "support": "selected face"}
+
+        return self._sta.call(run)
+
     def _draw(self, action: Callable[[Any], Any], kind: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             doc = self._part_document()
             if not self._active_sketch(doc):
                 raise RuntimeError("No active sketch. Call sw_start_sketch first.")
             created = action(doc.SketchManager)
-            if created is None:
+            if created is None or created is False:
                 raise RuntimeError(f"SolidWorks failed to create the requested {kind}.")
             doc.GraphicsRedraw2()
             return {"created": kind, "sketch_active": True}
@@ -542,6 +700,29 @@ class SolidWorksBridge:
         return self._draw(
             lambda sm: sm.Create3PointArc(x1, y1, 0, xm, ym, 0, x2, y2, 0), "arc"
         )
+
+    def draw_polygon(
+        self, cx: float, cy: float, radius: float, sides: int, unit: str
+    ) -> dict[str, Any]:
+        cx, cy = to_meters(cx, unit), to_meters(cy, unit)
+        radius = positive_meters(radius, unit, "radius")
+        if isinstance(sides, bool) or int(sides) != sides or not 3 <= int(sides) <= 100:
+            raise ValueError("sides must be a whole number from 3 through 100.")
+        sides = int(sides)
+
+        def create(sm: Any) -> bool:
+            points = [
+                (cx + radius * math.cos(2 * math.pi * index / sides),
+                 cy + radius * math.sin(2 * math.pi * index / sides))
+                for index in range(sides)
+            ]
+            for index, (x1, y1) in enumerate(points):
+                x2, y2 = points[(index + 1) % sides]
+                if sm.CreateLine(x1, y1, 0, x2, y2, 0) is None:
+                    return False
+            return True
+
+        return self._draw(create, f"closed {sides}-sided polygon")
 
     def finish_sketch(self) -> dict[str, Any]:
         def run() -> dict[str, Any]:
@@ -611,7 +792,9 @@ class SolidWorksBridge:
 
         return self._sta.call(run)
 
-    def cut_extrude(self, sketch_name: str, depth: float, unit: str, through_all: bool) -> dict[str, Any]:
+    def cut_extrude(
+        self, sketch_name: str, depth: float, unit: str, through_all: bool, reverse_direction: bool
+    ) -> dict[str, Any]:
         distance = positive_meters(depth, unit, "depth")
 
         def run() -> dict[str, Any]:
@@ -627,7 +810,7 @@ class SolidWorksBridge:
             blind = 0
             through_all_end = 1
             feature = doc.FeatureManager.FeatureCut4(
-                True, False, False,
+                True, False, reverse_direction,
                 through_all_end if through_all else blind,
                 blind,
                 0.0 if through_all else distance, 0.0,
@@ -649,6 +832,7 @@ class SolidWorksBridge:
                 "created": str(feature.Name),
                 "source_sketch": sketch_name,
                 "through_all": through_all,
+                "reverse_direction": reverse_direction,
                 "depth": None if through_all else depth,
                 "unit": unit,
                 "mass_properties": self._mass_properties(doc),
@@ -723,22 +907,41 @@ class SolidWorksBridge:
 
         return self._sta.call(run)
 
+    def export_neutral(self, path: str, overwrite: bool) -> dict[str, Any]:
+        supported = {".step", ".stp", ".iges", ".igs", ".stl"}
+
+        def run() -> dict[str, Any]:
+            doc = self._document()
+            if self._doc_type(doc) not in {"part", "assembly"}:
+                raise RuntimeError("Neutral export currently supports active Part and Assembly documents.")
+            target = Path(path).expanduser()
+            if not target.is_absolute() or target.suffix.lower() not in supported:
+                raise ValueError("Export path must be absolute and end in .STEP, .STP, .IGES, .IGS, or .STL.")
+            if not target.parent.is_dir():
+                raise ValueError(f"Export folder does not exist: {target.parent}")
+            if target.exists() and not overwrite:
+                raise FileExistsError("Export target already exists. Set overwrite=true only to replace it.")
+            doc.ClearSelection2(True)
+            version = int(getattr(self._sw_constants, "swSaveAsCurrentVersion", 0))
+            silent = int(getattr(self._sw_constants, "swSaveAsOptions_Silent", 1))
+            ok = doc.Extension.SaveAs3(str(target), version, silent, None, None, None, None)
+            if not ok:
+                raise RuntimeError(f"SolidWorks failed to export {target}.")
+            return {"exported": str(target), "format": target.suffix.lstrip(".").upper()}
+
+        return self._sta.call(run)
+
     def save(self, path: str | None, overwrite: bool) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            import pythoncom
-            import win32com.client
-
             doc = self._document()
             current = str(self._value(doc, "GetPathName"))
             if path is None or not path.strip():
                 if not current:
                     raise ValueError("This document has no file name yet; supply an absolute .SLDPRT path.")
-                errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-                warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-                ok = doc.Save3(1, errors, warnings)
-                if not ok or errors.value:
-                    raise RuntimeError(f"SolidWorks failed to save the document (error code {errors.value}).")
-                return {"saved": str(self._value(doc, "GetPathName")), "warnings": warnings.value}
+                ok = doc.Save3(1, None, None)
+                if not ok:
+                    raise RuntimeError("SolidWorks failed to save the active document.")
+                return {"saved": str(self._value(doc, "GetPathName"))}
 
             target = Path(path).expanduser()
             if not target.is_absolute():
@@ -752,12 +955,12 @@ class SolidWorksBridge:
                 raise ValueError(f"Save folder does not exist: {target.parent}")
             if target.exists() and os.path.normcase(str(target)) != os.path.normcase(current) and not overwrite:
                 raise FileExistsError("Target file already exists. Set overwrite=true only if replacement is intended.")
-            errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-            warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-            ok = doc.Extension.SaveAs3(str(target), 0, 1, None, None, errors, warnings)
-            if not ok or errors.value:
-                raise RuntimeError(f"SolidWorks failed to save {target} (error code {errors.value}).")
-            return {"saved": str(target), "warnings": warnings.value}
+            version = int(getattr(self._sw_constants, "swSaveAsCurrentVersion", 0))
+            silent = int(getattr(self._sw_constants, "swSaveAsOptions_Silent", 1))
+            ok = doc.Extension.SaveAs3(str(target), version, silent, None, None, None, None)
+            if not ok:
+                raise RuntimeError(f"SolidWorks failed to save {target}.")
+            return {"saved": str(target)}
 
         return self._sta.call(run)
 
